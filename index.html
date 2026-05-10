@@ -457,8 +457,15 @@ function splitCSV(line) {
 function filterRows(year, mf, mt, day, dept) {
   return allData.filter(r => {
     if (day) {
-      const d=new Date(day);
-      return r.year===d.getFullYear() && r.month===d.getMonth()+1 && r.day===d.getDate();
+      // day is YYYY-MM-DD from input[type=date] — compare directly to r.date
+      if (r.date === day) return true;
+      // Also try parsing parts directly to avoid timezone issues
+      const parts = day.split('-');
+      if (parts.length === 3) {
+        const dy=+parts[0], dm=+parts[1], dd=+parts[2];
+        return r.year===dy && r.month===dm && r.day===dd;
+      }
+      return false;
     }
     if (r.year!==year) return false;
     if (r.month<mf || r.month>mt) return false;
@@ -502,7 +509,13 @@ function aggRows(rows) {
 function getDiseases(year, mf, mt, day) {
   const out = {};
   if (day) {
-    Object.assign(out, disDay[day]||{});
+    // day from input[type=date] is already YYYY-MM-DD
+    const src = disDay[day] || {};
+    Object.assign(out, src);
+    // If no data found in disDay, also try EMBEDDED_DAY_DIS directly
+    if (Object.keys(src).length === 0) {
+      Object.assign(out, EMBEDDED_DAY_DIS[day]||{});
+    }
   } else {
     for (let m=mf; m<=mt; m++) {
       const k=`${year}-${String(m).padStart(2,'0')}`;
@@ -609,9 +622,9 @@ const TOOLTIP_PCT = {callbacks:{label:ctx=>{const s=ctx.dataset.data.reduce((a,b
 
 function donut(id, labels, data, colors) {
   const cv=document.getElementById(id); if(!cv) return;
-  const fi=labels.map((l,i)=>([l,data[i],colors[i]])).filter(([,,]=>data[i]>0,[l,d,c])=>d>0);
+  const fi=labels.map((l,i)=>({l,d:data[i],c:colors[i]})).filter(x=>x.d>0);
   if(charts[id]) charts[id].destroy();
-  charts[id]=new Chart(cv,{type:'doughnut',data:{labels:fi.map(x=>x[0]),datasets:[{data:fi.map(x=>x[1]),backgroundColor:fi.map(x=>x[2]),borderWidth:0,hoverOffset:5}]},options:{responsive:true,maintainAspectRatio:false,cutout:'60%',plugins:{legend:LEGEND_OPTS,tooltip:TOOLTIP_PCT},animation:{duration:350}}});
+  charts[id]=new Chart(cv,{type:'doughnut',data:{labels:fi.map(x=>x.l),datasets:[{data:fi.map(x=>x.d),backgroundColor:fi.map(x=>x.c),borderWidth:0,hoverOffset:5}]},options:{responsive:true,maintainAspectRatio:false,cutout:'60%',plugins:{legend:LEGEND_OPTS,tooltip:TOOLTIP_PCT},animation:{duration:350}}});
 }
 
 function bar(id, labels, datasets) {
@@ -634,26 +647,54 @@ function populateYears() {
   const sel=document.getElementById('f-year');
   sel.innerHTML='';
   years.forEach(y=>{ const o=document.createElement('option'); o.value=y; o.textContent=y; sel.appendChild(o); });
-  sel.value=Math.max(...years);
+  const maxY=Math.max(...years);
+  sel.value=maxY;
+  // Set month range to available months for this year
+  const months=allData.filter(r=>r.year===maxY).map(r=>r.month);
+  if(months.length){
+    document.getElementById('f-mf').value=Math.min(...months);
+    document.getElementById('f-mt').value=Math.max(...months);
+  }
 }
 
 function applyFilter() {
-  const year=+document.getElementById('f-year').value;
-  const mf=+document.getElementById('f-mf').value;
-  const mt=+document.getElementById('f-mt').value;
   const day=document.getElementById('f-day').value;
   const dept=document.getElementById('f-dept').value;
-  const rows=filterRows(year,mf,mt,day,dept);
-  const label=day?`📅 ${day}`:`${MONTH_NAMES[mf-1]}–${MONTH_NAMES[mt-1]} ${year}`;
-  document.getElementById('showing').textContent=label+` · ${rows.length} days`;
+  let year, mf, mt, rows, label;
+
+  if (day) {
+    // Single day mode — derive year/month from the date string
+    const parts=day.split('-');
+    year=+parts[0]; mf=+parts[1]; mt=+parts[1];
+    rows=filterRows(year,mf,mt,day,dept);
+    label=`📅 ${day}`;
+    // Update year dropdown to match
+    if(document.getElementById('f-year').value!=year){
+      document.getElementById('f-year').value=year;
+    }
+  } else {
+    year=+document.getElementById('f-year').value;
+    mf=+document.getElementById('f-mf').value;
+    mt=+document.getElementById('f-mt').value;
+    rows=filterRows(year,mf,mt,null,dept);
+    label=`${MONTH_NAMES[mf-1]}–${MONTH_NAMES[mt-1]} ${year}`;
+  }
+
+  const dayCount = rows.length;
+  const totalPts = rows.reduce((s,r)=>s+r.total,0);
+  document.getElementById('showing').textContent=
+    label + ` · ${dayCount} day${dayCount!==1?'s':''} · ${totalPts.toLocaleString()} visits`;
   renderAll(rows,year,mf,mt,day);
 }
 
 function resetFilter() {
   const years=[...document.getElementById('f-year').options].map(o=>+o.value);
-  document.getElementById('f-year').value=Math.max(...years);
+  const maxY=Math.max(...years);
+  document.getElementById('f-year').value=maxY;
   document.getElementById('f-mf').value=1;
-  document.getElementById('f-mt').value=12;
+  // Auto-detect max month with data for selected year
+  const maxMonth=Math.max(...allData.filter(r=>r.year===maxY).map(r=>r.month),1);
+  document.getElementById('f-mt').value=maxMonth;
   document.getElementById('f-day').value='';
   document.getElementById('f-dept').value='All';
   applyFilter();
